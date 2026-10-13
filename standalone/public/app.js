@@ -83,16 +83,16 @@ document.addEventListener('input',e=>{if(e.target.id==='faq-search'){const q=e.t
 document.addEventListener('submit',async e=>{
  const form=e.target;if(!(form instanceof HTMLFormElement))return;e.preventDefault();const fd=new FormData(form);const submit=form.querySelector('button[type="submit"],button:not([type])');if(submit)submit.disabled=true;
  try{
-  if(form.id==='checkout-form'){
+  if(form.getAttribute("id")==='checkout-form'){
    const r=await api('/api/orders',{method:'POST',body:{productId:form.dataset.product,contact:fd.get('contact'),accountEmail:fd.get('accountEmail'),method:fd.get('method'),note:fd.get('note'),agreed:fd.get('agreed')==='on'}});
    remember(r.id,r.token);history.pushState(null,'','/order');await render();$('#order-result').innerHTML=receipt(r.order,r.token);$('#order-result').scrollIntoView();toast('订单已创建，请保存查询凭证。');
-  }else if(form.id==='query-form'){const id=String(fd.get('id')).trim().toUpperCase(),token=String(fd.get('token')).trim();const o=await api('/api/orders/'+encodeURIComponent(id),{headers:{'X-Order-Token':token}});remember(id,token);$('#order-result').innerHTML=receipt(o,token);}
-  else if(form.id==='payment-form'){const o=await api('/api/orders/'+activeOrder.order.id+'/payment',{method:'POST',headers:{'X-Order-Token':activeOrder.token},body:{reference:fd.get('reference')}});$('#order-result').innerHTML=receipt(o,activeOrder.token);toast('付款信息已提交，等待人工核实。');}
-  else if(form.id==='login-form'){await api('/api/admin/login',{method:'POST',body:{password:fd.get('password')}});await render();}
-  else if(form.id==='manage-form'){const result=await api('/api/admin/orders/'+form.dataset.id,{method:'PATCH',body:{status:fd.get('status'),note:fd.get('note'),version:Number(form.dataset.version)}});$('#dialog').close();await render();toast(result.delivered?'收款已确认，卡密已自动发放。':result.waitingStock?'收款已确认，等待补货。':'订单已更新。');}
+  }else if(form.getAttribute("id")==='query-form'){const id=String(fd.get('id')).trim().toUpperCase(),token=String(fd.get('token')).trim();const o=await api('/api/orders/'+encodeURIComponent(id),{headers:{'X-Order-Token':token}});remember(id,token);$('#order-result').innerHTML=receipt(o,token);}
+  else if(form.getAttribute("id")==='payment-form'){const o=await api('/api/orders/'+activeOrder.order.id+'/payment',{method:'POST',headers:{'X-Order-Token':activeOrder.token},body:{reference:fd.get('reference')}});$('#order-result').innerHTML=receipt(o,activeOrder.token);toast('付款信息已提交，等待人工核实。');}
+  else if(form.getAttribute("id")==='login-form'){await api('/api/admin/login',{method:'POST',body:{password:fd.get('password')}});await render();}
+  else if(form.getAttribute("id")==='manage-form'){const result=await api('/api/admin/orders/'+form.dataset.id,{method:'PATCH',body:{status:fd.get('status'),note:fd.get('note'),version:Number(form.dataset.version)}});$('#dialog').close();await render();toast(result.delivered?'收款已确认，卡密已自动发放。':result.waitingStock?'收款已确认，等待补货。':'订单已更新。');}
   else if(form.classList.contains('product-form')){await api('/api/admin/products/'+form.dataset.id,{method:'PATCH',body:{priceCents:Math.round(Number(fd.get('price'))*100),enabled:fd.get('enabled')==='on',deliveryMode:fd.get('deliveryMode'),deliveryInstructions:fd.get('deliveryInstructions')}});await render();toast('套餐已保存。');}
-  else if(form.id==='card-import-form'){const result=await api('/api/admin/cards/import',{method:'POST',body:{productId:fd.get('productId'),codes:fd.get('codes')}});form.reset();await render();toast('已导入 '+result.imported+' 张，跳过重复 '+result.skipped+' 张。缺货订单可点击补发卡密。');}
-  else if(form.id==='settings-form'){const b=Object.fromEntries(fd);b.acceptingOrders=fd.get('acceptingOrders')==='on';await api('/api/admin/settings',{method:'PATCH',body:b});await render();toast('经营设置已保存。');}
+  else if(form.getAttribute("id")==='card-import-form'){const result=await api('/api/admin/cards/import',{method:'POST',body:{productId:fd.get('productId'),codes:fd.get('codes')}});form.reset();await render();toast('已导入 '+result.imported+' 张，跳过重复 '+result.skipped+' 张。缺货订单可点击补发卡密。');}
+  else if(form.getAttribute("id")==='settings-form'){const b=Object.fromEntries(fd);b.acceptingOrders=fd.get('acceptingOrders')==='on';await api('/api/admin/settings',{method:'PATCH',body:b});await render();toast('经营设置已保存。');}
  }catch(err){toast(err.message);}finally{if(submit&&submit.isConnected)submit.disabled=false;}
 });
 let pollingOrder=false;
@@ -103,3 +103,4 @@ setInterval(async()=>{
 },10000);
 window.addEventListener('popstate',render);
 render();
+
