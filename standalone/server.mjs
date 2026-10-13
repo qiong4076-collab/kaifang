@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {initExtensions,extensionRoutes,isExtensionPath} from './extensions.mjs';
 import {cardKey,availableCards,inventory,importCards,disableCard,deliverCard,customerDelivery} from './cards.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
@@ -38,6 +39,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY,product_id TEXT NO
 const cardDB={prepare(sql){return {bind(...args){return {
  async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return {meta:{changes:Number(db.prepare(sql).run(...args).changes)}};},runNow(){return /^\s*SELECT/i.test(sql)?{results:db.prepare(sql).all(...args),meta:{changes:0}}:{meta:{changes:Number(db.prepare(sql).run(...args).changes)}};}
 };}};},async batch(items){db.exec('BEGIN IMMEDIATE');try{const result=items.map(i=>i.runNow());db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}}};
+for(const [table,fields] of [['products',{category:"TEXT NOT NULL DEFAULT 'chatgpt'",billing_label:"TEXT NOT NULL DEFAULT '月'",original_price_cents:'INTEGER',activation_mode:"TEXT NOT NULL DEFAULT 'external'"}],['orders',{billing_label:"TEXT NOT NULL DEFAULT '月'",service_intent:"TEXT NOT NULL DEFAULT 'new'",activation_mode:"TEXT NOT NULL DEFAULT 'external'",activation_status:"TEXT NOT NULL DEFAULT 'none'",activation_email:"TEXT NOT NULL DEFAULT ''",activation_note:"TEXT NOT NULL DEFAULT ''"}]]){const columns=db.prepare('PRAGMA table_info('+table+')').all().map(c=>c.name);for(const [name,type] of Object.entries(fields))if(!columns.includes(name))db.exec('ALTER TABLE '+table+' ADD '+name+' '+type);}
+db.exec(`CREATE TABLE IF NOT EXISTS content_items(id TEXT PRIMARY KEY,kind TEXT NOT NULL,json TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE IF NOT EXISTS support_requests(id TEXT PRIMARY KEY,kind TEXT NOT NULL,order_id TEXT NOT NULL DEFAULT '',contact TEXT NOT NULL,message TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'new',admin_note TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);`);
 const defaults = {
  brand: 'AI 订阅服务', tagline: '为自己的账号，选择合适的订阅',
  wechat: '', supportEmail: '', serviceHours: '处理时间请联系客服确认',
@@ -131,7 +134,7 @@ function json(res,status,data,headers={}) {
 async function orderForCustomer(o) {
  const h=db.prepare('SELECT status,message,created_at FROM history WHERE order_id=? ORDER BY id').all(o.id);
  return {id:o.id,productName:o.product_name,amountCents:o.amount_cents,status:o.status,statusLabel:states[o.status],
- method:o.method,createdAt:o.created_at,updatedAt:o.updated_at,paymentReference:o.payment_reference,delivery:await customerDelivery(cardDB,process.env,o),history:h};
+ method:o.method,billingLabel:o.billing_label,serviceIntent:o.service_intent,activation:{mode:o.activation_mode,status:o.activation_status,note:o.activation_status==='rejected'?'申请未完成，请联系客服核查。':''},createdAt:o.created_at,updatedAt:o.updated_at,paymentReference:o.payment_reference,delivery:await customerDelivery(cardDB,process.env,o),history:h};
 }
 function owns(req,order) {
  const supplied=req.headers['x-order-token'];
@@ -143,6 +146,12 @@ function safeCSV(value) {
 async function api(req,res,path) {
  const method=req.method;
  if(method!=='GET') requireOrigin(req);
+ await initExtensions(cardDB);
+ if(isExtensionPath(path,method)){
+  const request=new Request((process.env.PUBLIC_ORIGIN||'http://'+req.headers.host)+req.url,{method,headers:req.headers,body:method==='GET'?undefined:JSON.stringify(await body(req))});
+  const response=await extensionRoutes(request,cardDB,process.env,{body:r=>r.json(),field:textField,email,settings,owns:(_,o)=>owns(req,o),customerOrder:orderForCustomer,limit:(_,k,m,d)=>limit(req,k,m,d),admin:()=>requireAdmin(req)});
+  res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(Buffer.from(await response.arrayBuffer()));
+ }
  if(path==='/api/site'&&method==='GET') return json(res,200,{...settings(),products:products(),statuses:states});
  if(path==='/api/admin/session'&&method==='GET') return json(res,200,{authenticated:isAdmin(req),configured:!!adminDigest});
  if(path==='/api/admin/login'&&method==='POST') {
@@ -170,12 +179,14 @@ async function api(req,res,path) {
   if(!['alipay','wechat'].includes(method))fail('请选择支持的付款方式。');
   if(!(method==='alipay'?s.alipayQr:s.wechatQr))fail('该收款方式尚未配置。');
   if(b.agreed!==true)fail('请先阅读并同意服务说明。');
+  const phoneRegion=textField(b.phoneRegion,16);if(!['','+86','+852','+853','+886','other'].includes(phoneRegion))fail('联系区号无效。');const orderNote=(phoneRegion?'联系区号：'+phoneRegion+'\n':'')+customerNote;
+  const intent=b.serviceIntent||'new';if(!['new','renew','upgrade'].includes(intent))fail('办理类型无效。');
   const id='AI'+new Date().toISOString().slice(0,10).replaceAll('-','')+randomBytes(5).toString('hex').toUpperCase();
   const token=randomBytes(24).toString('hex'),at=now();
   db.exec('BEGIN IMMEDIATE');
   try{
-   db.prepare('INSERT INTO orders(id,access_hash,product_id,product_name,amount_cents,contact,account_email,method,status,customer_note,created_at,updated_at,delivery_mode,delivery_instructions) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id,hash(token),p.id,p.name,p.price_cents,contact,accountEmail,method,'awaiting_payment',customerNote,at,at,p.delivery_mode,p.delivery_instructions);
+   db.prepare('INSERT INTO orders(id,access_hash,product_id,product_name,amount_cents,contact,account_email,method,status,customer_note,created_at,updated_at,delivery_mode,delivery_instructions,billing_label,service_intent,activation_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id,hash(token),p.id,p.name,p.price_cents,contact,accountEmail,method,'awaiting_payment',orderNote,at,at,p.delivery_mode,p.delivery_instructions,p.billing_label,intent,p.activation_mode);
    db.prepare('INSERT INTO history(order_id,status,message,created_at) VALUES(?,?,?,?)').run(id,'awaiting_payment','订单已创建，请付款并保存订单查询凭证。',at);
    db.exec('COMMIT');
   }catch(e){db.exec('ROLLBACK');throw e;}
@@ -207,7 +218,7 @@ async function api(req,res,path) {
   const dm=path.match(/^\/api\/admin\/orders\/([A-Z0-9]+)\/deliver$/);
   if(dm&&method==='POST'){const o=db.prepare('SELECT * FROM orders WHERE id=?').get(dm[1]);if(!o)fail('订单不存在。',404);if(o.delivery_mode!=='card'||!['paid','completed'].includes(o.status))fail('只有已确认收款的卡密订单可以补发。',409);cardKey(process.env);return json(res,200,await deliverCard(cardDB,o.id));}
   if(path==='/api/admin/orders'&&method==='GET') {
-   const rows=db.prepare('SELECT id,product_name,amount_cents,contact,account_email,method,status,payment_reference,customer_note,admin_note,created_at,updated_at,version,delivery_mode FROM orders ORDER BY created_at DESC LIMIT 500').all();
+   const rows=db.prepare('SELECT id,product_name,amount_cents,contact,account_email,method,status,payment_reference,customer_note,admin_note,created_at,updated_at,version,delivery_mode,service_intent,activation_mode,activation_status,activation_email,activation_note FROM orders ORDER BY created_at DESC LIMIT 500').all();
    return json(res,200,{orders:rows,statuses:states,transitions});
   }
   if(path==='/api/admin/export'&&method==='GET') {
@@ -240,7 +251,7 @@ async function api(req,res,path) {
    const b=await body(req),s=settings();
    const updated={...s,brand:textField(b.brand,40,true),wechat:textField(b.wechat,100),supportEmail:email(b.supportEmail,false),
     serviceHours:textField(b.serviceHours,160,true),alipayQr:qr(b.alipayQr),wechatQr:qr(b.wechatQr),
-    acceptingOrders:b.acceptingOrders===true,refundPolicy:textField(b.refundPolicy,1200,true)};
+    acceptingOrders:b.acceptingOrders===true,refundPolicy:textField(b.refundPolicy,1200,true),supportQr:b.supportQr===undefined?s.supportQr||'':qr(b.supportQr),tutorialVideo:b.tutorialVideo===undefined?s.tutorialVideo||'':qr(b.tutorialVideo),announcement:b.announcement===undefined?s.announcement||'':textField(b.announcement,300),businessName:b.businessName===undefined?s.businessName||'':textField(b.businessName,150),externalShop:b.externalShop===undefined?s.externalShop||'':qr(b.externalShop)};
    if(updated.acceptingOrders&&!updated.wechat&&!updated.supportEmail)fail('开售前请先配置客服联系方式。');
    if(updated.acceptingOrders&&!updated.alipayQr&&!updated.wechatQr)fail('开售前请先配置收款二维码。');
    db.prepare('UPDATE settings SET json=? WHERE id=1').run(JSON.stringify(updated));
@@ -263,7 +274,7 @@ const server=http.createServer(async(req,res)=>{
  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
  try{
   const path=new URL(req.url,'http://localhost').pathname;
-  if(path.startsWith('/api/'))return await api(req,res,path);
+  if(path.startsWith('/api/')||isExtensionPath(path,req.method))return await api(req,res,path);
   if(req.method!=='GET'&&req.method!=='HEAD')fail('不支持该请求。',405);
   const relative=decodeURIComponent(path);
   let file=resolve(publicDir,'.'+relative);

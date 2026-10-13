@@ -138,3 +138,45 @@ test('simultaneous card confirmations and retries cannot double-allocate stock',
   assert.equal(DB.sqlite.prepare("SELECT COUNT(*) AS n FROM history WHERE order_id=? AND status='completed'").get(id).n,1);
  }finally{DB.sqlite.close();}
 });
+
+test('extended storefront protects contact lookup, activation, receipts, recovery and publishing',async()=>{
+ const DB=new D1Adapter(),env={DB,ADMIN_BOOTSTRAP_EMAIL:'owner@example.com',CARD_ENCRYPTION_KEY:'d'.repeat(64)},user={userId:'extended-owner',email:'owner@example.com'};
+ const call=async(path,{method='GET',body,token,admin=false}={})=>{const res=await handle(new Request('https://site.example'+path,{method,headers:{Origin:'https://site.example','Content-Type':'application/json',...(token?{'X-Order-Token':token}:{})},body:body?JSON.stringify(body):undefined}),env,admin?user:null);return {status:res.status,type:res.headers.get('content-type'),data:res.headers.get('content-type')?.includes('json')?await res.json():await res.text()};};
+ const manage=(path,method='GET',body)=>call(path,{method,body,admin:true});
+ try{
+  assert.equal((await call('/api/content')).data.posts.length,31);
+  assert.equal((await call('/api/site')).data.products.length,16);
+  assert.equal((await call('/api/admin/content')).status,401);
+  await manage('/api/admin/login','POST',{});
+  await manage('/api/admin/settings','PATCH',{brand:'Test',wechat:'test',supportEmail:'',serviceHours:'Test',alipayQr:'/test.svg',wechatQr:'',refundPolicy:'Test',acceptingOrders:true});
+  await manage('/api/admin/products/plus','PATCH',{priceCents:100,enabled:true,deliveryMode:'card',deliveryInstructions:'TEST ONLY',activationMode:'manual'});
+  await manage('/api/admin/cards/import','POST',{productId:'plus',codes:'TEST-ONLY-ACTIVATION-CARD'});
+  const created=(await call('/api/orders',{method:'POST',body:{productId:'plus',contact:'TEST-CONTACT',method:'alipay',agreed:true,serviceIntent:'renew'}})).data;
+  assert.equal((await call('/api/orders/lookup',{method:'POST',body:{contact:'TEST-CONTACT'}})).status,404);
+  assert.equal((await call('/api/orders/lookup',{method:'POST',token:created.token,body:{contact:'OTHER-CONTACT'}})).status,404);
+  assert.equal((await call('/api/orders/lookup',{method:'POST',token:created.token,body:{contact:'TEST-CONTACT'}})).data.id,created.id);
+  assert.equal((await call('/api/orders/'+created.id+'/receipt',{token:created.token})).status,409);
+  await manage('/api/admin/orders/'+created.id,'PATCH',{status:'paid',version:1});
+  const receipt=await call('/api/orders/'+created.id+'/receipt?lang=en',{token:created.token});assert.equal(receipt.type,'application/pdf');assert.ok(receipt.data.startsWith('%PDF-1.4'));assert.ok(!receipt.data.includes('TEST-ONLY-ACTIVATION-CARD'));
+  assert.equal((await call('/api/orders/'+created.id+'/activate',{method:'POST',token:created.token,body:{code:'WRONG-CARD',accountEmail:'test@example.com',agreed:true}})).status,404);
+  const activate={code:'TEST-ONLY-ACTIVATION-CARD',accountEmail:'test@example.com',agreed:true};
+  assert.equal((await call('/api/orders/'+created.id+'/activate',{method:'POST',token:created.token,body:activate})).data.status,'requested');
+  const rows=(await manage('/api/admin/orders')).data.orders,o=rows.find(o=>o.id===created.id);assert.equal(o.activation_email,'test@example.com');assert.equal(o.service_intent,'renew');
+  await call('/api/orders/'+created.id+'/activate',{method:'POST',token:created.token,body:activate});
+  assert.equal((await manage('/api/admin/orders')).data.orders.find(o=>o.id===created.id).version,o.version);
+  assert.equal((await manage('/api/admin/orders/'+created.id+'/activate','PATCH',{version:o.version,status:'completed'})).status,200);
+  assert.equal((await call('/api/orders/'+created.id,{token:created.token})).data.activation.status,'completed');
+  assert.equal((await manage('/api/admin/orders/'+created.id+'/reissue','POST',{verified:false})).status,400);
+  const reissued=(await manage('/api/admin/orders/'+created.id+'/reissue','POST',{verified:true})).data;
+  assert.equal((await call('/api/orders/'+created.id,{token:created.token})).status,404);assert.equal((await call('/api/orders/'+created.id,{token:reissued.token})).status,200);
+  const request=await call('/api/support',{method:'POST',body:{kind:'recovery',contact:'TEST-CONTACT',orderId:created.id,message:'TEST ONLY RECOVERY'}});assert.equal(request.status,200);assert.equal(request.data.token,undefined);
+  assert.equal((await call('/api/admin/requests')).status,401);assert.equal((await manage('/api/admin/requests')).data.requests.length,1);
+  const feedback=await manage('/api/admin/content','POST',{kind:'feedback',enabled:false,value:{title:'TEST ONLY IMAGE',category:'到账反馈',image:'/test.svg',caption:'TEST ONLY',date:'2026-10-14'}});
+  assert.equal(feedback.status,200);assert.equal((await call('/api/content')).data.feedback.length,0);await manage('/api/admin/content/'+encodeURIComponent(feedback.data.id),'PATCH',{enabled:true});assert.equal((await call('/api/content')).data.feedback.length,1);
+  assert.equal((await manage('/api/admin/content','POST',{kind:'feedback',value:{title:'Bad',category:'到账反馈',image:'javascript:alert(1)'}})).status,400);
+  assert.equal((await manage('/api/admin/products','POST',{id:'customcard',name:'Test product',category:'other',priceCents:null,enabled:false})).status,200);
+  assert.equal((await call('/api/network/lookup',{method:'POST',body:{ip:'8.8.8.8',consent:false}})).status,400);
+  assert.equal((await call('/api/network/lookup',{method:'POST',body:{ip:'not-an-ip',consent:true}})).status,400);
+  assert.ok((await call('/blog/rss.xml')).data.includes('<rss version="2.0">'));assert.ok((await call('/sitemap.xml')).data.includes('/blog/codex-credits-recharge-guide'));assert.ok((await call('/robots.txt')).data.includes('Disallow: /admin'));
+ }finally{DB.sqlite.close();}
+});
