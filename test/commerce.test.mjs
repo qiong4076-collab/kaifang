@@ -59,3 +59,82 @@ test('hosted API protects manual payments, admin ownership, prices, receipt priv
   assert.equal((await call('/api/admin/session',{identity:{userId:'different-id',email:'owner@example.com'}})).data.authenticated,false);
  }finally{DB.sqlite.close();}
 });
+
+test('card fulfillment requires confirmed payment, encrypts stock, protects receipts and safely retries shortages',async()=>{
+ const DB=new D1Adapter(),env={DB,ADMIN_BOOTSTRAP_EMAIL:'owner@example.com',CARD_ENCRYPTION_KEY:'a'.repeat(64)},user={userId:'card-owner',email:'owner@example.com'};
+ async function call(path,{method='GET',body,asAdmin=false,token}={}){
+  const headers={Origin:'https://site.example'};if(body)headers['Content-Type']='application/json';if(token)headers['X-Order-Token']=token;
+  const res=await handle(new Request('https://site.example'+path,{method,headers,body:body?JSON.stringify(body):undefined}),env,asAdmin?user:null);
+  return {status:res.status,data:(res.headers.get('content-type')||'').includes('json')?await res.json():await res.text()};
+ }
+ const admin=(path,method,body)=>call(path,{method,body,asAdmin:true});
+ const order=async id=>(await admin('/api/admin/orders')).data.orders.find(o=>o.id===id);
+ const confirm=async id=>admin('/api/admin/orders/'+id,'PATCH',{status:'paid',version:(await order(id)).version});
+ const importStock=codes=>admin('/api/admin/cards/import','POST',{productId:'plus',codes});
+ try{
+  await admin('/api/admin/login','POST',{});
+  await admin('/api/admin/settings','PATCH',{brand:'Test',wechat:'test-support',supportEmail:'',serviceHours:'Test',alipayQr:'/test.svg',wechatQr:'',refundPolicy:'Test',acceptingOrders:true});
+  assert.equal((await call('/api/admin/cards')).status,401);
+  assert.equal((await call('/api/admin/cards/import',{method:'POST',body:{productId:'plus',codes:'UNAUTHORIZED'}})).status,401);
+  assert.equal((await admin('/api/admin/products/plus','PATCH',{priceCents:100,enabled:true,deliveryMode:'card',deliveryInstructions:''})).status,400);
+  await admin('/api/admin/products/plus','PATCH',{priceCents:100,enabled:true,deliveryMode:'card',deliveryInstructions:'TEST ONLY: use the card as instructed.'});
+  const payload={productId:'plus',contact:'test-customer',accountEmail:'',method:'alipay',agreed:true};
+  assert.equal((await call('/api/orders',{method:'POST',body:payload})).status,409);
+  const firstCode='TEST-ONLY-SECRET-A-1234';
+  assert.deepEqual((await importStock(firstCode+'\n'+firstCode)).data,{imported:1,skipped:1});
+  const raw=DB.sqlite.prepare('SELECT * FROM cards').get();assert.ok(!raw.ciphertext.includes(firstCode));assert.notEqual(raw.code_hash,firstCode);
+  assert.ok(!JSON.stringify((await admin('/api/admin/cards')).data).includes(firstCode));
+  assert.ok(!JSON.stringify((await call('/api/site')).data).includes(firstCode));
+  const a=(await call('/api/orders',{method:'POST',body:payload})).data,b=(await call('/api/orders',{method:'POST',body:payload})).data;
+  assert.equal((await admin('/api/admin/orders/'+a.id+'/deliver','POST',{})).status,409);
+  const submitted=await call('/api/orders/'+a.id+'/payment',{method:'POST',token:a.token,body:{reference:'TEST-NO-PAYMENT'}});
+  assert.equal(submitted.data.status,'payment_submitted');assert.equal(submitted.data.delivery.code,undefined);
+  assert.equal((await call('/api/orders/'+a.id,{token:b.token})).status,404);
+  // Changing a product later must not change the purchased delivery contract.
+  await admin('/api/admin/products/plus','PATCH',{priceCents:200,enabled:true,deliveryMode:'manual',deliveryInstructions:'NEW INSTRUCTIONS'});
+  const stale=(await order(a.id)).version;
+  const confirmed=await confirm(a.id);assert.equal(confirmed.data.delivered,true);
+  const received=(await call('/api/orders/'+a.id,{token:a.token})).data;
+  assert.equal(received.delivery.code,firstCode);assert.equal(received.delivery.instructions,'TEST ONLY: use the card as instructed.');assert.equal(received.amountCents,100);
+  assert.equal((await admin('/api/admin/orders/'+a.id,'PATCH',{status:'paid',version:stale})).status,409);
+  await admin('/api/admin/orders/'+a.id+'/deliver','POST',{});
+  assert.equal(DB.sqlite.prepare('SELECT COUNT(*) AS n FROM cards WHERE order_id=?').get(a.id).n,1);
+  assert.equal((await admin('/api/admin/cards/'+raw.id,'PATCH',{disabled:true})).status,409);
+  assert.equal((await confirm(b.id)).data.waitingStock,true);
+  assert.equal((await call('/api/orders/'+b.id,{token:b.token})).data.delivery.status,'waiting_stock');
+  assert.equal((await admin('/api/admin/orders/'+b.id,'PATCH',{status:'completed',version:(await order(b.id)).version})).status,400);
+  assert.equal((await admin('/api/admin/orders/'+b.id+'/deliver','POST',{})).data.waitingStock,true);
+  assert.equal((await admin('/api/admin/cards/import','POST',{productId:'go',codes:firstCode})).data.skipped,1);
+  const secondCode='TEST-ONLY-SECRET-B-5678';await importStock(secondCode+'\nTEST-ONLY-DISABLED-9012');
+  const disableId=DB.sqlite.prepare('SELECT id FROM cards WHERE hint=?').get('••••9012').id;
+  await admin('/api/admin/cards/'+disableId,'PATCH',{disabled:true});
+  assert.equal((await admin('/api/admin/orders/'+b.id+'/deliver','POST',{})).data.delivered,true);
+  assert.equal((await call('/api/orders/'+b.id,{token:b.token})).data.delivery.code,secondCode);
+  assert.equal((await admin('/api/admin/cards')).data.counts.find(p=>p.id==='plus').available,0);
+  assert.ok(!(await admin('/api/admin/export')).data.includes(firstCode));
+  await admin('/api/admin/orders/'+a.id,'PATCH',{status:'refunded',version:(await order(a.id)).version});
+  assert.equal((await call('/api/orders/'+a.id,{token:a.token})).data.delivery.code,undefined);
+  assert.equal((await admin('/api/admin/orders/'+a.id+'/deliver','POST',{})).status,409);
+  assert.equal(DB.sqlite.prepare('SELECT order_id FROM cards WHERE id=?').get(raw.id).order_id,a.id);
+  await importStock('abcd');assert.equal(DB.sqlite.prepare('SELECT hint FROM cards ORDER BY rowid DESC LIMIT 1').get().hint,'••••');
+ }finally{DB.sqlite.close();}
+});
+
+test('simultaneous card confirmations and retries cannot double-allocate stock',async()=>{
+ const DB=new D1Adapter(),env={DB,ADMIN_BOOTSTRAP_EMAIL:'owner@example.com',CARD_ENCRYPTION_KEY:'b'.repeat(64)},user={userId:'parallel-owner',email:'owner@example.com'};
+ const call=async(path,method='GET',body,admin=true)=>{const res=await handle(new Request('https://site.example'+path,{method,headers:{Origin:'https://site.example','Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}),env,admin?user:null);return {status:res.status,data:await res.json()};};
+ try{
+  await call('/api/admin/login','POST',{});
+  await call('/api/admin/settings','PATCH',{brand:'Test',wechat:'test',supportEmail:'',serviceHours:'Test',alipayQr:'/test.svg',wechatQr:'',refundPolicy:'Test',acceptingOrders:true});
+  await call('/api/admin/products/plus','PATCH',{priceCents:100,enabled:true,deliveryMode:'card',deliveryInstructions:'TEST ONLY'});
+  await call('/api/admin/cards/import','POST',{productId:'plus',codes:'PARALLEL-TEST-CARD-A\nPARALLEL-TEST-CARD-B'});
+  const orders=await Promise.all([1,2].map(()=>call('/api/orders','POST',{productId:'plus',contact:'test',method:'alipay',agreed:true},false)));
+  const id=orders[0].data.id;
+  const repeated=await Promise.all([1,2].map(()=>call('/api/admin/orders/'+id,'PATCH',{status:'paid',version:1})));
+  assert.deepEqual(repeated.map(r=>r.status).sort(),[200,409]);
+  const second=await call('/api/admin/orders/'+orders[1].data.id,'PATCH',{status:'paid',version:1});assert.equal(second.data.delivered,true);
+  await Promise.all([1,2,3].map(()=>call('/api/admin/orders/'+id+'/deliver','POST',{})));
+  assert.equal(DB.sqlite.prepare('SELECT COUNT(DISTINCT order_id) AS n FROM cards').get().n,2);
+  assert.equal(DB.sqlite.prepare("SELECT COUNT(*) AS n FROM history WHERE order_id=? AND status='completed'").get(id).n,1);
+ }finally{DB.sqlite.close();}
+});

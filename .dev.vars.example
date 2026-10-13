@@ -1,1 +1,4 @@
 ADMIN_BOOTSTRAP_EMAIL=seedy@sites.test
+
+# Generate a persistent 32-byte hex key for card encryption; do not commit a real key.
+CARD_ENCRYPTION_KEY=

@@ -11,7 +11,7 @@ test('manual orders require payment review, authorization and server-owned prici
  const folder=await mkdtemp(join(tmpdir(),'ai-subscription-test-'));
  let child,base;
  async function start(){
-  child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,PORT:'0',HOST:'127.0.0.1',DATA_DIR:folder,PUBLIC_ORIGIN:'',ADMIN_PASSWORD:'test-only-admin-credential-2026'},stdio:['ignore','pipe','pipe']});
+  child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,PORT:'0',HOST:'127.0.0.1',DATA_DIR:folder,PUBLIC_ORIGIN:'',ADMIN_PASSWORD:'test-only-admin-credential-2026',CARD_ENCRYPTION_KEY:'c'.repeat(64)},stdio:['ignore','pipe','pipe']});
   let stderr='';child.stderr.on('data',c=>stderr+=c.toString());
   base=await new Promise((resolve,reject)=>{
    const timer=setTimeout(()=>reject(new Error('Server startup timed out: '+stderr)),10000);
@@ -64,10 +64,22 @@ test('manual orders require payment review, authorization and server-owned prici
    assert.equal((await request('/api/admin/orders/'+id,{method:'PATCH',cookie:adminCookie,body:{version:order.version,status:next,note:'Internal note'}})).status,200);
   }
   const csv=await fetch(base+'/api/admin/export',{headers:{Cookie:adminCookie}});assert.equal(csv.status,200);assert.ok((await csv.text()).includes("'=SUM"));
+  const cardCode='TEST-ONLY-STANDALONE-CARD-1234';
+  assert.equal((await request('/api/admin/products/go',{method:'PATCH',cookie:adminCookie,body:{priceCents:100,enabled:true,deliveryMode:'card',deliveryInstructions:'TEST ONLY REDEMPTION'}})).status,200);
+  assert.equal((await request('/api/admin/cards/import',{method:'POST',cookie:adminCookie,body:{productId:'go',codes:cardCode+'\n'+cardCode}})).data.imported,1);
+  const cardOrder=await request('/api/orders',{method:'POST',body:{productId:'go',contact:'test',method:'alipay',agreed:true}});
+  assert.equal(cardOrder.status,201);assert.equal(cardOrder.data.order.delivery.code,undefined);
+  assert.equal((await request('/api/admin/orders/'+cardOrder.data.id+'/deliver',{method:'POST',cookie:adminCookie,body:{}})).status,409);
+  const auto=await request('/api/admin/orders/'+cardOrder.data.id,{method:'PATCH',cookie:adminCookie,body:{version:1,status:'paid'}});
+  assert.equal(auto.status,200);assert.equal(auto.data.delivered,true);
+  assert.equal((await request('/api/orders/'+cardOrder.data.id,{token:cardOrder.data.token})).data.delivery.code,cardCode);
+  await request('/api/admin/orders/'+cardOrder.data.id+'/deliver',{method:'POST',cookie:adminCookie,body:{}});
+  const stock=(await request('/api/admin/cards',{cookie:adminCookie})).data;
+  assert.equal(stock.counts.find(p=>p.id==='go').delivered,1);assert.ok(!JSON.stringify(stock).includes(cardCode));
   await stop();await start();
+  assert.equal((await request('/api/orders/'+cardOrder.data.id,{token:cardOrder.data.token})).data.delivery.code,cardCode);
   assert.equal((await request('/api/orders/'+id,{token})).data.status,'completed');
   assert.equal((await request('/api/admin/orders',{cookie:adminCookie})).status,401);
   assert.equal((await request('/api/site')).data.acceptingOrders,true);
  }finally{await stop();await rm(folder,{recursive:true,force:true});}
 });
-
