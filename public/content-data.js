@@ -1,3 +1,5 @@
+import {enrichArticle} from './article-details.js';
+import {REFERENCE_ARTICLE_TAGS} from './reference-catalog.js';
 const question=(category,question,answer,link='')=>({category,question,answer,link});
 export const FAQ=[
  question('售前咨询','本站提供哪些订阅服务？','商品页列出可办理的订阅和卡密。名称、周期、交付方式和售价以当前商品说明为准，未开售商品可先咨询客服。','/plus-price'),
@@ -89,5 +91,6 @@ const steps={
  模型动态:['查看官方账号中实际开放的模型、工具和客户端版本。','记录任务需要的能力，确认所选订阅适合自己的使用安排。','历史文章不替代当前价格或额度说明，办理前再核对。'],
  风控:['先记录实际错误、入口和发生时间，遮盖密码、卡密和凭证。','区分账号、付款、功能及连接问题，按帮助中心的步骤排查。','通过可信官方入口操作；订单问题交由本站客服核实，不公开个人登录资料。'],
 };
-export const ARTICLES=articleRows.map(([id,title,category,tags,detail])=>({id,title,category,tags:tags.split(','),date:'2026-10-14',readMinutes:4,author:'AI 订阅服务',excerpt:detail,sections:[{heading:'先确认实际情况',text:detail},{heading:'操作与核对步骤',text:steps[category].join('\n\n')},{heading:'保存记录与后续处理',text:'保留订单号、查询凭证、实际付款记录和办理结果。本站内容用于说明自己的服务流程；账号权益及验证要求，以相应产品的官方页面为准。售后联系时不要公开卡密、密码或会话凭证。'}]}));
+export const LEGACY_ARTICLES=articleRows.map(([id,title,category,tags,detail])=>({id,title,category,tags:tags.split(','),date:'2026-10-14',readMinutes:4,author:'AI 订阅服务',excerpt:detail,sections:[{heading:'先确认实际情况',text:detail},{heading:'操作与核对步骤',text:steps[category].join('\n\n')},{heading:'保存记录与后续处理',text:'保留订单号、查询凭证、实际付款记录和办理结果。本站内容用于说明自己的服务流程；账号权益及验证要求，以相应产品的官方页面为准。售后联系时不要公开卡密、密码或会话凭证。'}]}));
+export const ARTICLES=LEGACY_ARTICLES.map(a=>enrichArticle(a,REFERENCE_ARTICLE_TAGS[a.id]||[]));
 export const SITE_CONTENT={faq:FAQ,help:HELP,articles:ARTICLES,blogCategories:['充值','套餐对比','Codex','模型动态','风控']};

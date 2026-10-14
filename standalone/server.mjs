@@ -133,7 +133,7 @@ function json(res,status,data,headers={}) {
 }
 async function orderForCustomer(o) {
  const h=db.prepare('SELECT status,message,created_at FROM history WHERE order_id=? ORDER BY id').all(o.id);
- return {id:o.id,productName:o.product_name,amountCents:o.amount_cents,status:o.status,statusLabel:states[o.status],
+ return {id:o.id,productName:o.product_name,productId:o.product_id,accountEmail:o.account_email,amountCents:o.amount_cents,status:o.status,statusLabel:states[o.status],
  method:o.method,billingLabel:o.billing_label,serviceIntent:o.service_intent,activation:{mode:o.activation_mode,status:o.activation_status,note:o.activation_status==='rejected'?'申请未完成，请联系客服核查。':''},createdAt:o.created_at,updatedAt:o.updated_at,paymentReference:o.payment_reference,delivery:await customerDelivery(cardDB,process.env,o),history:h};
 }
 function owns(req,order) {
@@ -271,9 +271,10 @@ async function api(req,res,path) {
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp'};
 const server=http.createServer(async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('X-Frame-Options','DENY');res.setHeader('Referrer-Policy','same-origin');
- res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+ res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; media-src 'self' https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
  try{
   const path=new URL(req.url,'http://localhost').pathname;
+  if(['/i/gpt56','/i/ip','/i/ip2'].includes(path)){res.writeHead(308,{Location:'/?i='+path.split('/').at(-1)});return res.end();}
   if(path.startsWith('/api/')||isExtensionPath(path,req.method))return await api(req,res,path);
   if(req.method!=='GET'&&req.method!=='HEAD')fail('不支持该请求。',405);
   const relative=decodeURIComponent(path);

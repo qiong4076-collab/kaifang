@@ -73,6 +73,16 @@ npm run build
 
 ## 常用入口
 
+本次按原站 sitemap、robots 与公开链接清点了 206 个同域入口：202 个页面地址（含文章、标签和分页）、3 个推广转跳、1 个 RSS。全部页面地址已通过桌面与 390px 手机浏览器检查。公开地址清单位于 public/reference-catalog.js；31 篇文章使用各自的内容、比较表、步骤和代码示意，103 个原站标签及多页专题均有对应内容。
+
+独立补齐 `/gpt20x`（提前续费）、`/gpt20-upgrade`（升级核价）、`/purchase-team`（Business 购买）、`/business-recharge`（订单邀请）、`/guide1`／`/guide2`（详细／快捷教程）、`/codex-phone-verification`（登录验证说明），Plus、Pro、Team 分别使用独立专题布局。
+
+`/gift`、`/coupons`、`/share`、`/invoice`、`/czgpt`、`/returnorder`、`/session`、`/demo` 及 14 个卡密渠道入口也可打开。优惠和推荐采用申请与人工审核，不自动抵扣、返佣或转账；发票入口提供自己的收款凭证，不生成税务发票；账号资料页只生成不含登录凭证的办理资料。供应商入口使用本站订单和人工卡密办理流程，不连接参考站的供应商。
+
+Business 邀请需正确订单凭证、已确认收款及原目标邮箱，进入管理后台申请队列。待处理请求不重复创建；已处理后只有显式重新邀请才重新受理。退款订单不能申请。客户查询不返回内部备注。续费、升级、优惠与推荐同样在后台申请队列处理，最终报价通过商家原联系渠道确认。
+
+文章升级只更新尚未被商家修改的旧默认内容，保留发布状态和自定义修改。编辑器支持 `##` 章节、简单 Markdown 表格、编号步骤与代码块，正文输出经过 HTML 转义。新增全地址渲染、独立布局、多页标签、正文转义、文章升级保留商家修改、Business 邮箱核验与重复申请、退款申请阻止测试。
+
 `/plus-price`、`/gptpro`、`/purchase`、`/purchase-go`、`/purchase-gptplus`、`/purchase-gptpro?tier=gptprolite`、`/purchase-upgrade-pro`、`/purchase_credits`、`/gptget`、`/order`、`/codex`、`/xiaodian`、`/team`、`/business-recharge`、`/ip`、`/feedback`、`/guide`、`/faq`、`/help`、`/blog`、`/chatgpt-plus`、`/chatgpt-pro`、`/admin`。RSS 位于 `/blog/rss.xml`，站点地图位于 `/sitemap.xml`。
 
 联系方式查询仍需要查询凭证，避免仅凭手机号泄露卡密。遗失凭证的客户提交人工找回申请后，运营者需在原沟通渠道核实身份，再在后台重发；旧凭证会失效。企业申请只进入后台队列，不会自动发送邮件或微信。

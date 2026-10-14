@@ -2,7 +2,7 @@ import {randomBytes,createHash} from 'node:crypto';
 import {isIP} from 'node:net';
 import {cardKey} from './cards.js';
 import {paymentReceipt} from './receipt.js';
-import {ARTICLES} from '../../public/content-data.js';
+import {ARTICLES,LEGACY_ARTICLES} from '../../public/content-data.js';
 
 const stmt=(db,sql,...args)=>db.prepare(sql).bind(...args);
 const first=(db,sql,...args)=>stmt(db,sql,...args).first();
@@ -27,10 +27,11 @@ export async function initExtensions(db){
  if(!initialized.has(db))initialized.set(db,db.batch([
   ...catalog.map(([id,name,subtitle,category,billing])=>stmt(db,'INSERT OR IGNORE INTO products(id,name,subtitle,features,category,billing_label) VALUES(?,?,?,?,?,?)',id,name,subtitle,JSON.stringify(['付款前确认交付说明','订单进度与凭证查询','客服处理售后问题']),category,billing)),
   ...ARTICLES.map(post=>stmt(db,"INSERT OR IGNORE INTO content_items(id,kind,json,enabled,created_at,updated_at) VALUES(?,'blog',?,1,?,?)",'blog:'+post.id,JSON.stringify(post),post.date,post.date)),
+  ...ARTICLES.map((post,i)=>stmt(db,"UPDATE content_items SET json=?,updated_at=? WHERE id=? AND kind='blog' AND json=?",JSON.stringify(post),post.date,'blog:'+post.id,JSON.stringify(LEGACY_ARTICLES[i]))),
  ]).catch(e=>{initialized.delete(db);throw e;}));
  await initialized.get(db);
 }
-export function isExtensionPath(path,method){return ['/blog/rss.xml','/sitemap.xml','/robots.txt','/api/content','/api/network','/api/network/lookup','/api/orders/lookup','/api/support','/api/admin/content','/api/admin/requests','/api/admin/products'].includes(path)||/^\/api\/orders\/[A-Z0-9]+\/(receipt|activate)$/.test(path)||/^\/api\/admin\/(content|requests)\//.test(path)||/^\/api\/admin\/orders\/[A-Z0-9]+\/(activate|reissue)$/.test(path)||(/^\/api\/admin\/products\/[a-z0-9]+$/.test(path)&&method==='PATCH');}
+export function isExtensionPath(path,method){return ['/blog/rss.xml','/sitemap.xml','/robots.txt','/api/content','/api/network','/api/network/lookup','/api/orders/lookup','/api/support','/api/admin/content','/api/admin/requests','/api/admin/products'].includes(path)||/^\/api\/orders\/[A-Z0-9]+\/(receipt|activate|business-invite|requests)$/.test(path)||/^\/api\/admin\/(content|requests)\//.test(path)||/^\/api\/admin\/orders\/[A-Z0-9]+\/(activate|reissue)$/.test(path)||(/^\/api\/admin\/products\/[a-z0-9]+$/.test(path)&&method==='PATCH');}
 function validateContent(b,field){
  if(!['blog','feedback'].includes(b.kind))fail('请选择内容类型。');
  if(b.kind==='feedback'){
@@ -50,7 +51,7 @@ export async function extensionRoutes(req,db,env,ctx){
   const xml=s=>String(s).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
   if(path==='/robots.txt')return new Response('User-agent: *\nDisallow: /admin\nDisallow: /api/\nDisallow: /order\nDisallow: /checkout\nDisallow: /gptget\nSitemap: '+url.origin+'/sitemap.xml\n',{headers:{'Content-Type':'text/plain; charset=utf-8'}});
   const posts=(await all(db,"SELECT json FROM content_items WHERE kind='blog' AND enabled=1 ORDER BY created_at DESC")).map(r=>JSON.parse(r.json));
-  if(path==='/sitemap.xml'){const pages=['/','/plus-price','/gptpro','/chatgpt-plus','/chatgpt-pro','/purchase','/purchase-go','/purchase-gptplus','/purchase_credits','/codex','/gemini-pro','/grok','/claude','/xiaodian','/team','/guide','/faq','/help','/blog','/feedback','/about','/privacy','/terms'];return new Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+[...pages,...posts.map(p=>'/blog/'+p.id)].map(p=>'<url><loc>'+xml(url.origin+p)+'</loc></url>').join('')+'</urlset>',{headers:{'Content-Type':'application/xml; charset=utf-8'}});}
+  if(path==='/sitemap.xml'){const pages=['/','/plus-price','/gptpro','/chatgpt-plus','/chatgpt-pro','/purchase','/purchase-go','/purchase-gptplus','/purchase_credits','/codex','/gemini-pro','/grok','/claude','/xiaodian','/team','/business-recharge','/gpt20x','/gpt20-upgrade','/purchase-team','/guide1','/guide2','/codex-phone-verification','/gift','/coupons','/share','/invoice','/session','/guide','/faq','/help','/blog','/feedback','/about','/privacy','/terms'];return new Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+[...pages,...posts.map(p=>'/blog/'+p.id)].map(p=>'<url><loc>'+xml(url.origin+p)+'</loc></url>').join('')+'</urlset>',{headers:{'Content-Type':'application/xml; charset=utf-8'}});}
   const s=await settings();return new Response('<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>'+xml(s.brand+'指南')+'</title><link>'+xml(url.origin+'/blog')+'</link><description>本站订阅、卡密和使用指南</description>'+posts.map(p=>'<item><title>'+xml(p.title)+'</title><link>'+xml(url.origin+'/blog/'+p.id)+'</link><guid>'+xml(url.origin+'/blog/'+p.id)+'</guid><description>'+xml(p.excerpt)+'</description></item>').join('')+'</channel></rss>',{headers:{'Content-Type':'application/rss+xml; charset=utf-8'}});
  }
  if(path==='/api/content'&&method==='GET'){
@@ -61,9 +62,30 @@ export async function extensionRoutes(req,db,env,ctx){
   const o=token?await first(db,'SELECT * FROM orders WHERE access_hash=? AND lower(contact)=lower(?)',hash(token),field(b.contact,120,true)):null;owns(req,o);return json(await customerOrder(o));
  }
  if(path==='/api/support'&&method==='POST'){
-  await limit(req,'support',5,3600000);const b=await body(req),kind=field(b.kind,30,true);if(!['recovery','business','support'].includes(kind))fail('申请类型无效。');
+  await limit(req,'support',5,3600000);const b=await body(req),kind=field(b.kind,30,true);if(!['recovery','business','support','renewal','upgrade'].includes(kind))fail('申请类型无效。');
   const contact=field(b.contact,120,true),message=field(b.message,1200,true),id=randomBytes(12).toString('hex'),at=new Date().toISOString();
   await stmt(db,'INSERT INTO support_requests(id,kind,order_id,contact,message,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',id,kind,field(b.orderId,60),contact,message,at,at).run();return json({ok:true,id,message:'申请已保存，请通过客服确认后续处理。'});
+ }
+ const portalMatch=path.match(/^\/api\/orders\/([A-Z0-9]+)\/(business-invite|requests)$/);
+ if(portalMatch){
+  await limit(req,'portal',40,60000);const o=await first(db,'SELECT * FROM orders WHERE id=?',portalMatch[1]);owns(req,o);
+  if(portalMatch[2]==='business-invite'){
+   if(o.product_id!=='business')fail('此订单不是 Business 商品。',409);
+   const id='business:'+o.id,existing=await first(db,'SELECT id,status,created_at,updated_at FROM support_requests WHERE id=?',id);
+   if(method==='GET')return json(existing||{status:'none'});
+   if(method!=='POST')fail('请求方法无效。',405);
+   if(!['paid','processing','completed'].includes(o.status))fail('订单未确认收款或已退款，不能申请邀请。',409);
+   const b=await body(req),target=field(b.accountEmail,180,true);if(!email(target)||target.toLowerCase()!==o.account_email.toLowerCase()||b.agreed!==true)fail('请确认本订单的目标账号邮箱。');
+   const at=new Date().toISOString();await stmt(db,"INSERT OR IGNORE INTO support_requests(id,kind,order_id,contact,message,created_at,updated_at) VALUES(?,'business_invite',?,?,?,?,?)",id,o.id,o.contact,'Business 邀请申请\n目标邮箱：'+target,at,at).run();
+   if(existing?.status==='resolved'&&b.reinvite===true)await stmt(db,"UPDATE support_requests SET status='new',updated_at=? WHERE id=? AND status='resolved'",at,id).run();
+   return json(await first(db,'SELECT id,status,created_at,updated_at FROM support_requests WHERE id=?',id));
+  }
+  if(method==='GET')return json({requests:await all(db,"SELECT id,kind,message,status,created_at,updated_at FROM support_requests WHERE order_id=? AND kind IN ('discount','referral','reinvite','business_invite','renewal','upgrade') ORDER BY created_at DESC",o.id)});
+  if(method!=='POST')fail('请求方法无效。',405);
+  if(!['paid','processing','completed'].includes(o.status))fail('请先确认订单已收款；退款订单不能申请。',409);
+  const b=await body(req),kind=field(b.kind,30,true);if(!['discount','referral','reinvite'].includes(kind))fail('申请类型无效。');
+  if(kind==='reinvite'&&o.product_id!=='business')fail('重新邀请仅适用于 Business 商品。',409);
+  const id=kind+':'+o.id,at=new Date().toISOString();await stmt(db,'INSERT OR IGNORE INTO support_requests(id,kind,order_id,contact,message,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',id,kind,o.id,o.contact,field(b.message,800,true),at,at).run();return json({ok:true,id});
  }
  const orderMatch=path.match(/^\/api\/orders\/([A-Z0-9]+)\/(receipt|activate)$/);
  if(orderMatch){

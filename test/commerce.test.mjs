@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readdirSync,readFileSync} from 'node:fs';
 import {handle} from '../app/api/service.js';
+import {initExtensions} from '../app/api/extensions.js';
+import {ARTICLES,LEGACY_ARTICLES} from '../public/content-data.js';
 class D1Adapter{
  constructor(){this.sqlite=new DatabaseSync(':memory:');this.sqlite.exec('PRAGMA foreign_keys=ON');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())this.sqlite.exec(readFileSync('drizzle/'+file,'utf8'));}
  prepare(sql){
@@ -19,6 +21,30 @@ class D1Adapter{
  }
  async batch(items){this.sqlite.exec('BEGIN');try{const results=items.map(i=>i.runNow());this.sqlite.exec('COMMIT');return results;}catch(e){this.sqlite.exec('ROLLBACK');throw e;}}
 }
+test('article expansion upgrades untouched seed content while preserving merchant edits and publication state',async()=>{
+ const DB=new D1Adapter();try{const edited={...LEGACY_ARTICLES[1],title:'MERCHANT CUSTOM TITLE',sections:[{heading:'Custom',text:'Keep this merchant edit.'}]};DB.sqlite.prepare('INSERT INTO content_items(id,kind,json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?)').run('blog:'+LEGACY_ARTICLES[0].id,'blog',JSON.stringify(LEGACY_ARTICLES[0]),0,'original-date','original-date');DB.sqlite.prepare('INSERT INTO content_items(id,kind,json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?)').run('blog:'+edited.id,'blog',JSON.stringify(edited),1,'original-date','original-date');await initExtensions(DB);const old=DB.sqlite.prepare('SELECT * FROM content_items WHERE id=?').get('blog:'+LEGACY_ARTICLES[0].id),custom=DB.sqlite.prepare('SELECT * FROM content_items WHERE id=?').get('blog:'+edited.id);assert.deepEqual(JSON.parse(old.json),ARTICLES[0]);assert.equal(old.enabled,0);assert.deepEqual(JSON.parse(custom.json),edited);}finally{DB.sqlite.close();}
+});
+test('Business invitation and customer service portals require ownership, confirmed payment and idempotent requests',async()=>{
+ const DB=new D1Adapter(),env={DB,ADMIN_BOOTSTRAP_EMAIL:'owner@example.com'},user={userId:'business-owner',email:'owner@example.com'};
+ const call=async(path,{method='GET',body,token,admin=false}={})=>{const res=await handle(new Request('https://site.example'+path,{method,headers:{Origin:'https://site.example','Content-Type':'application/json',...(token?{'X-Order-Token':token}:{})},body:body?JSON.stringify(body):undefined}),env,admin?user:null);return {status:res.status,data:await res.json()};};
+ const manage=(path,method='GET',body)=>call(path,{method,body,admin:true});
+ try{
+  await manage('/api/admin/login','POST',{});await manage('/api/admin/settings','PATCH',{brand:'Test',wechat:'test',supportEmail:'',serviceHours:'Test',alipayQr:'/test.svg',wechatQr:'',refundPolicy:'Test',acceptingOrders:true});await manage('/api/admin/products/business','PATCH',{priceCents:100,enabled:true});
+  const o=(await call('/api/orders',{method:'POST',body:{productId:'business',contact:'TEST BUSINESS',accountEmail:'member@example.com',method:'alipay',agreed:true}})).data,path='/api/orders/'+o.id;
+  assert.equal((await call(path+'/business-invite')).status,404);assert.equal((await call(path+'/requests')).status,404);
+  assert.equal((await call(path+'/business-invite',{method:'POST',token:o.token,body:{accountEmail:'member@example.com',agreed:true}})).status,409);
+  await manage('/api/admin/orders/'+o.id,'PATCH',{status:'paid',version:1});
+  assert.equal((await call(path+'/business-invite',{method:'POST',token:o.token,body:{accountEmail:'other@example.com',agreed:true}})).status,400);
+  const invite=(await call(path+'/business-invite',{method:'POST',token:o.token,body:{accountEmail:'member@example.com',agreed:true}})).data;assert.equal(invite.status,'new');
+  assert.equal((await call(path+'/business-invite',{method:'POST',token:o.token,body:{accountEmail:'member@example.com',agreed:true}})).data.id,invite.id);assert.equal(DB.sqlite.prepare("SELECT COUNT(*) AS n FROM support_requests WHERE kind='business_invite'").get().n,1);
+  DB.sqlite.prepare("UPDATE support_requests SET status='resolved',admin_note='PRIVATE ADMIN NOTE' WHERE id=?").run(invite.id);
+  await call(path+'/business-invite',{method:'POST',token:o.token,body:{accountEmail:'member@example.com',agreed:true}});assert.equal((await call(path+'/business-invite',{token:o.token})).data.status,'resolved');
+  await call(path+'/business-invite',{method:'POST',token:o.token,body:{accountEmail:'member@example.com',agreed:true,reinvite:true}});assert.equal((await call(path+'/business-invite',{token:o.token})).data.status,'new');
+  const request=(await call(path+'/requests',{method:'POST',token:o.token,body:{kind:'discount',message:'TEST RENEWAL REQUEST'}})).data;await call(path+'/requests',{method:'POST',token:o.token,body:{kind:'discount',message:'REPEATED'}});assert.equal(DB.sqlite.prepare("SELECT COUNT(*) AS n FROM support_requests WHERE kind='discount'").get().n,1);assert.ok(request.id);
+  const records=(await call(path+'/requests',{token:o.token})).data;assert.ok(!JSON.stringify(records).includes('PRIVATE ADMIN NOTE'));assert.ok(records.requests.some(r=>r.kind==='discount'));
+  const current=(await manage('/api/admin/orders')).data.orders.find(r=>r.id===o.id);await manage('/api/admin/orders/'+o.id,'PATCH',{status:'refunded',version:current.version});assert.equal((await call(path+'/requests',{method:'POST',token:o.token,body:{kind:'referral',message:'SHOULD NOT APPLY'}})).status,409);
+ }finally{DB.sqlite.close();}
+});
 test('hosted API protects manual payments, admin ownership, prices, receipt privacy and concurrent edits',async()=>{
  const DB=new D1Adapter(),env={DB,ADMIN_BOOTSTRAP_EMAIL:'owner@example.com'},user={userId:'owner-unique-id',email:'owner@example.com'};
  async function call(path,{method='GET',body,asAdmin=false,identity,token,origin='https://site.example'}={}){

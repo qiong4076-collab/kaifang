@@ -12,9 +12,9 @@
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "check": "node --check public/app.js && node --check public/extended-ui.js && node --check public/content-data.js && node --check app/api/service.js && node --check app/api/cards.js && node --check app/api/extensions.js && node --check app/api/receipt.js && node --check standalone/server.mjs && node --check standalone/public/app.js",
+    "check": "node --check public/app.js && node --check public/extended-ui.js && node --check public/content-data.js && node --check app/api/service.js && node --check app/api/cards.js && node --check app/api/extensions.js && node --check app/api/receipt.js && node --check standalone/server.mjs && node --check standalone/public/app.js && node --check public/reference-pages.js && node --check public/portal-pages.js && node --check public/article-details.js && node --check public/reference-catalog.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/commerce.test.mjs standalone/test/server.test.mjs"
+    "test": "node --test test/*.test.mjs standalone/test/server.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
